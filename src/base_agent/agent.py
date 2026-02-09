@@ -8,13 +8,14 @@ import os
 import json
 from typing import AsyncIterable, List, Optional, Any, Dict
 
-from anthropic import AsyncAnthropic
+from anthropic import AsyncAnthropic, AsyncAnthropicBedrock
 from anthropic.types import MessageParam, ToolResultBlockParam
 
 from .mcp_client import MCPClient, EmptyMCPClient, MCPConnectionError
 from .settings import (
     MCP_SERVER_URL,
     DEFAULT_MODEL,
+    DEFAULT_BEDROCK_MODEL,
     DEFAULT_SYSTEM_PROMPT,
     DEFAULT_TEMPERATURE,
     DEFAULT_THINKING_BUDGET_TOKENS,
@@ -23,6 +24,9 @@ from .settings import (
     INCLUDE_TOOL_LOGS,
     SIMULATE,
     MOCK_EMPTY_MCP,
+    USE_BEDROCK,
+    AWS_PROFILE,
+    AWS_REGION,
 )
 
 # Simple module logger; defaults to INFO if not configured by the host app.
@@ -74,24 +78,56 @@ class ClaudeMCPAgent:
         mock_empty_mcp: Optional[bool] = None,
         llm_max_retries: int = 3,
         llm_retry_backoff_seconds: float = 0.5,
+        use_bedrock: bool = USE_BEDROCK,
+        aws_profile: Optional[str] = AWS_PROFILE,
+        aws_region: str = AWS_REGION,
     ):
-        self.model = self._normalize_model(model)
+        self.use_bedrock = use_bedrock
         self.max_output_tokens = max_output_tokens
         self.system_prompt = system_prompt or ""
         self.temperature = temperature
         self.thinking_enabled = thinking_enabled
         self.thinking_budget_tokens = thinking_budget_tokens
         self.simulate = simulate
+
+        # Select appropriate model based on provider
+        if use_bedrock:
+            self.model = self._normalize_bedrock_model(model)
+        else:
+            self.model = self._normalize_model(model)
+
         logger.info(
             "Using system prompt",
             extra={"system_prompt_preview": (self.system_prompt[:120] if self.system_prompt else "<empty>")},
         )
 
-        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
-        if not self.api_key and not self.simulate:
-            raise ValueError("ANTHROPIC_API_KEY is required.")
+        if self.simulate:
+            self.client = None
+            self.api_key = None
+        elif use_bedrock:
+            # Use AWS Bedrock
+            logger.info(f"Using AWS Bedrock with model {self.model} in region {aws_region}")
+            if aws_profile:
+                import boto3
+                session = boto3.Session(profile_name=aws_profile)
+                credentials = session.get_credentials()
+                self.client = AsyncAnthropicBedrock(
+                    aws_access_key=credentials.access_key,
+                    aws_secret_key=credentials.secret_key,
+                    aws_session_token=credentials.token,
+                    aws_region=aws_region,
+                )
+            else:
+                # Use default AWS credential chain
+                self.client = AsyncAnthropicBedrock(aws_region=aws_region)
+            self.api_key = None
+        else:
+            # Use Anthropic API directly
+            self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+            if not self.api_key:
+                raise ValueError("ANTHROPIC_API_KEY is required (or set USE_BEDROCK=true).")
+            self.client = AsyncAnthropic(api_key=self.api_key)
 
-        self.client = None if self.simulate else AsyncAnthropic(api_key=self.api_key)
         mock_empty = MOCK_EMPTY_MCP if mock_empty_mcp is None else mock_empty_mcp
         if self.simulate:
             self.mcp_client = None
@@ -519,3 +555,18 @@ class ClaudeMCPAgent:
         if normalized.startswith("anthropic:"):
             return normalized.split(":", 1)[1]
         return normalized
+
+    @staticmethod
+    def _normalize_bedrock_model(model: str) -> str:
+        """Convert model name to Bedrock format if needed."""
+        normalized = (model or DEFAULT_BEDROCK_MODEL).strip()
+        # If already a Bedrock model ID, use as-is
+        if "anthropic." in normalized:
+            return normalized
+        # Drop provider prefixes
+        if normalized.startswith("anthropic:"):
+            normalized = normalized.split(":", 1)[1]
+        if normalized.startswith("bedrock:"):
+            return normalized.split(":", 1)[1]
+        # Use default Bedrock model
+        return DEFAULT_BEDROCK_MODEL

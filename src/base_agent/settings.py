@@ -20,6 +20,13 @@ MOCK_EMPTY_MCP = os.getenv("MOCK_EMPTY_MCP", "false").lower() in {"1", "true", "
 THINKING_ENABLED = os.getenv("THINKING_ENABLED", "false").lower() in {"1", "true", "yes"}
 DEFAULT_THINKING_BUDGET_TOKENS = int(os.getenv("THINKING_BUDGET_TOKENS", "1024"))
 
+# AWS Bedrock configuration
+USE_BEDROCK = os.getenv("USE_BEDROCK", "false").lower() in {"1", "true", "yes"}
+AWS_PROFILE = os.getenv("AWS_PROFILE")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+# Default Bedrock model (Claude Sonnet 4.5)
+DEFAULT_BEDROCK_MODEL = os.getenv("DEFAULT_BEDROCK_MODEL", "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+
 
 def load_system_prompt() -> str:
     """Load the system prompt from the bundled prompts/system_prompt.txt file."""
